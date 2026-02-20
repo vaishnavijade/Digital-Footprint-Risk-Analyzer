@@ -46,7 +46,7 @@ async def get_user_by_email(email: str) -> UserInDB | None:
         return None
     else:
         # MongoDB storage
-        db = await get_database()
+        db = get_database()
         user_data = await db.users.find_one({"email": email})
         if user_data:
             user_data["user_id"] = str(user_data.pop("_id"))
@@ -73,7 +73,7 @@ async def create_user(email: str, password: str, full_name: str | None = None) -
         await memory_insert_one("users", user_data)
     else:
         # MongoDB storage
-        db = await get_database()
+        db = get_database()
         # Use user_id as _id for consistency
         mongo_data = user_data.copy()
         mongo_data["_id"] = user_id
@@ -90,45 +90,73 @@ async def register(request: UserRegistrationRequest):
     Register a new user account
     
     - **email**: User's email address (must be unique)
-    - **password**: Password (minimum 8 characters)
+    - **password**: Password (minimum 8 characters, maximum 100 characters)
     - **full_name**: Optional user's full name
     
     Returns JWT access token and user information
     """
-    # Check if user already exists
-    existing_user = await get_user_by_email(request.email)
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+    try:
+        # Validate email format
+        if not request.email or "@" not in request.email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid email format"
+            )
+        
+        # Validate password length (minimum 8 characters)
+        if len(request.password) < 8:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password must be at least 8 characters long"
+            )
+        
+        # Check if user already exists
+        existing_user = await get_user_by_email(request.email)
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+        
+        # Create new user
+        user = await create_user(
+            email=request.email,
+            password=request.password,
+            full_name=request.full_name
+        )
+        
+        # Create access token
+        access_token = create_access_token(
+            data={"user_id": user.user_id, "email": user.email}
+        )
+        
+        # Prepare response
+        user_response = UserResponse(
+            user_id=user.user_id,
+            email=user.email,
+            full_name=user.full_name,
+            created_at=user.created_at,
+            is_active=user.is_active
+        )
+        
+        return TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user=user_response
         )
     
-    # Create new user
-    user = await create_user(
-        email=request.email,
-        password=request.password,
-        full_name=request.full_name
-    )
-    
-    # Create access token
-    access_token = create_access_token(
-        data={"user_id": user.user_id, "email": user.email}
-    )
-    
-    # Prepare response
-    user_response = UserResponse(
-        user_id=user.user_id,
-        email=user.email,
-        full_name=user.full_name,
-        created_at=user.created_at,
-        is_active=user.is_active
-    )
-    
-    return TokenResponse(
-        access_token=access_token,
-        token_type="bearer",
-        user=user_response
-    )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Registration failed: {str(e)}"
+        )
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -141,48 +169,57 @@ async def login(request: UserLoginRequest):
     
     Returns JWT access token and user information
     """
-    # Get user from database
-    user = await get_user_by_email(request.email)
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password"
+    try:
+        # Get user from database
+        user = await get_user_by_email(request.email)
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password"
+            )
+        
+        # Verify password
+        if not verify_password(request.password, user.hashed_password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password"
+            )
+        
+        # Check if user is active
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account is inactive"
+            )
+        
+        # Create access token
+        access_token = create_access_token(
+            data={"user_id": user.user_id, "email": user.email}
+        )
+        
+        # Prepare response
+        user_response = UserResponse(
+            user_id=user.user_id,
+            email=user.email,
+            full_name=user.full_name,
+            created_at=user.created_at,
+            is_active=user.is_active
+        )
+        
+        return TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user=user_response
         )
     
-    # Verify password
-    if not verify_password(request.password, user.hashed_password):
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Login failed: {str(e)}"
         )
-    
-    # Check if user is active
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is inactive"
-        )
-    
-    # Create access token
-    access_token = create_access_token(
-        data={"user_id": user.user_id, "email": user.email}
-    )
-    
-    # Prepare response
-    user_response = UserResponse(
-        user_id=user.user_id,
-        email=user.email,
-        full_name=user.full_name,
-        created_at=user.created_at,
-        is_active=user.is_active
-    )
-    
-    return TokenResponse(
-        access_token=access_token,
-        token_type="bearer",
-        user=user_response
-    )
 
 
 @router.get("/me", response_model=UserResponse)
