@@ -7,6 +7,9 @@ from fastapi import APIRouter, HTTPException, status, Depends
 from datetime import datetime
 from bson import ObjectId
 import uuid
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.models.schemas import (
     UserRegistrationRequest,
@@ -56,30 +59,39 @@ async def get_user_by_email(email: str) -> UserInDB | None:
 
 async def create_user(email: str, password: str, full_name: str | None = None) -> UserInDB:
     """Create a new user in the database"""
-    user_id = str(uuid.uuid4())
-    hashed_password = get_password_hash(password)
-    
-    user_data = {
-        "user_id": user_id,
-        "email": email,
-        "hashed_password": hashed_password,
-        "full_name": full_name,
-        "created_at": datetime.utcnow(),
-        "is_active": True
-    }
-    
-    if use_memory_storage():
-        # In-memory storage
-        await memory_insert_one("users", user_data)
-    else:
-        # MongoDB storage
-        db = get_database()
-        # Use user_id as _id for consistency
-        mongo_data = user_data.copy()
-        mongo_data["_id"] = user_id
-        await db.users.insert_one(mongo_data)
-    
-    return UserInDB(**user_data)
+    try:
+        user_id = str(uuid.uuid4())
+        hashed_password = get_password_hash(password)
+        
+        user_data = {
+            "user_id": user_id,
+            "email": email,
+            "hashed_password": hashed_password,
+            "full_name": full_name,
+            "created_at": datetime.utcnow(),
+            "is_active": True
+        }
+        
+        logger.info(f"Creating user: {email}")
+        
+        if use_memory_storage():
+            logger.info("Using in-memory storage")
+            # In-memory storage
+            await memory_insert_one("users", user_data)
+        else:
+            logger.info("Using MongoDB storage")
+            # MongoDB storage
+            db = get_database()
+            # Use user_id as _id for consistency
+            mongo_data = user_data.copy()
+            mongo_data["_id"] = user_id
+            await db.users.insert_one(mongo_data)
+            logger.info(f"User created in MongoDB: {user_id}")
+        
+        return UserInDB(**user_data)
+    except Exception as e:
+        logger.error(f"Failed to create user {email}: {str(e)}", exc_info=True)
+        raise
 
 
 # --- Authentication Routes ---
@@ -148,11 +160,13 @@ async def register(request: UserRegistrationRequest):
     except HTTPException:
         raise
     except ValueError as e:
+        logger.error(f"ValueError during registration: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except Exception as e:
+        logger.error(f"Registration failed - Error type: {type(e).__name__}, Message: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Registration failed: {str(e)}"

@@ -67,15 +67,33 @@ async def create_indexes():
     """Create database indexes for better performance"""
     if mongodb.use_memory:
         return
-    
-    # Analysis results indexes
-    await mongodb.db.analysis_results.create_index("user_id")
-    await mongodb.db.analysis_results.create_index("timestamp")
-    await mongodb.db.analysis_results.create_index("risk_level")
-    
-    # Users indexes
-    await mongodb.db.users.create_index("email", unique=True)
-    await mongodb.db.users.create_index("username", unique=True)
+    try:
+        # Analysis results indexes
+        await mongodb.db.analysis_results.create_index("user_id")
+        await mongodb.db.analysis_results.create_index("timestamp")
+        await mongodb.db.analysis_results.create_index("risk_level")
+
+        # Users indexes
+        # Keep unique email index
+        await mongodb.db.users.create_index("email", unique=True)
+
+        # Create a unique index on `username` only for documents where
+        # `username` exists and is not null. This avoids duplicate-key
+        # errors when multiple documents have no `username` field.
+        # If an old (strict) unique index exists we attempt to drop it first.
+        try:
+            await mongodb.db.users.drop_index("username_1")
+        except Exception:
+            # ignore if index does not exist or cannot be dropped
+            pass
+
+        await mongodb.db.users.create_index(
+            [("username", 1)],
+            unique=True,
+            partialFilterExpression={"username": {"$exists": True, "$ne": None}},
+        )
+    except Exception as e:
+        logger.warning(f"Failed creating indexes: {e}")
 
 
 def get_database():
